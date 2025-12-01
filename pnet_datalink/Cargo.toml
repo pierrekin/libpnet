@@ -14,7 +14,9 @@ edition = "2021"
 [features]
 netmap = []
 std = ["pnet_base/std"]
-default = ["std"]
+default = ["std", "winpcap"]
+winpcap = []
+winpkfilter = [ "ndisapi", "windows" ]
 
 [dependencies]
 libc = "0.2.147"
@@ -23,6 +25,11 @@ pnet_base = { path = "../pnet_base", version = "0.35.0", default-features = fals
 pnet_sys = { path = "../pnet_sys", version = "0.35.0" }
 
 pcap = { version = "2.0.0", optional = true }
+# TODO: Use a published crate once the following commit has been released.
+# https://github.com/wiresock/ndisapi-rs/pull/30
+# https://github.com/wiresock/ndisapi-rs/commit/1fc6cbff6a10fbef71b9b60aed5dfb74fad6e30c
+ndisapi = { git = "https://github.com/wiresock/ndisapi-rs.git", rev = "1fc6cbff6a10fbef71b9b60aed5dfb74fad6e30c", optional = true }
+windows = { version = "0.54.0", features = ["Win32_Foundation", "Win32_System_Threading"], optional = true }
 netmap_sys = { version = "0.1.4", optional = true, features = ["netmap_with_libs"] }
 serde = { version = "1.0.171", optional = true, default-features = false, features = [ "derive" ] }
 
