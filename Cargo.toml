@@ -20,7 +20,7 @@ appveyor = []
 travis = []
 serde = ["pnet_base/serde", "pnet_datalink?/serde"]
 std = ["pnet_base/std", "pnet_sys", "pnet_datalink", "pnet_transport", "ipnetwork"]
-default = ["std"]
+default = ["std", "pnet_datalink/winpcap"]
 nightly = []
 
 [dependencies]
