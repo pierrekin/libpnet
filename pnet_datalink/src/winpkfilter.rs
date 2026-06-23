@@ -1,9 +1,14 @@
 use super::{DataLinkReceiver, DataLinkSender, NetworkInterface};
 
-use ndisapi::{MacAddress, Ndisapi, IphlpNetworkAdapterInfo, EthRequest, EthRequestMut, IntermediateBuffer, FilterFlags};
+use ndisapi::{MacAddress, Ndisapi, IphlpNetworkAdapterInfo, NetworkAdapterInfo, EthRequest, EthRequestMut, IntermediateBuffer, FilterFlags};
 use pnet_base::MacAddr;
 use ipnetwork::IpNetwork;
-use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows::core::GUID;
+use windows::Win32::Foundation::{ERROR_SUCCESS, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows::Win32::NetworkManagement::IpHelper::{
+    ConvertInterfaceGuidToLuid, ConvertInterfaceLuidToIndex,
+};
+use windows::Win32::NetworkManagement::Ndis::NET_LUID_LH;
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
 use std::collections::VecDeque;
@@ -34,6 +39,40 @@ impl Default for Config {
             read_buffer_size: 4096,
         }
     }
+}
+
+/// Resolve the OS interface index for an adapter.
+///
+/// WinpkFilter names adapters `\DEVICE\{GUID}`; the GUID is read from that name
+/// and converted to the interface index via the adapter's LUID. Returns `None`
+/// if the name has no `{GUID}` component or a conversion fails.
+///
+/// TODO: drop the name parsing once ndisapi-rs exposes the adapter GUID (or
+/// LUID) as a structured field on the NDIS adapter info.
+fn interface_index(adapter: &NetworkAdapterInfo) -> Option<u32> {
+    let name = adapter.get_name();
+    let start = name.find('{')?;
+    let end = name.find('}')?;
+    if end <= start {
+        return None;
+    }
+    let guid = GUID::from(&name[start..=end]);
+
+    let mut luid = NET_LUID_LH::default();
+    // SAFETY: `guid` is a valid GUID and `luid` is a valid, writable
+    // NET_LUID_LH. ConvertInterfaceGuidToLuid reads the first and writes the
+    // second.
+    if unsafe { ConvertInterfaceGuidToLuid(&guid, &mut luid) } != ERROR_SUCCESS {
+        return None;
+    }
+
+    let mut index = 0u32;
+    // SAFETY: `luid` is initialized above and `index` is a valid, writable u32.
+    if unsafe { ConvertInterfaceLuidToIndex(&luid, &mut index) } != ERROR_SUCCESS {
+        return None;
+    }
+
+    Some(index)
 }
 
 pub fn channel(
@@ -246,8 +285,6 @@ pub fn interfaces() -> Vec<NetworkInterface> {
         let description =
             Ndisapi::get_friendly_adapter_name(adapter.get_name()).unwrap_or_else(|_| name.clone());
 
-        let index = adapter.get_handle().0 as u32; // this is a HANDLE, but we can treat as u32 for indexing
-
         // Get MAC
         let mac: Option<MacAddr> = MacAddress::from_slice(adapter.get_hw_address())
     .map(|m| {
@@ -255,21 +292,25 @@ pub fn interfaces() -> Vec<NetworkInterface> {
         MacAddr(bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5])
     });
 
-        // Get IP addresses using ndisapi-rs IP Helper functionality
-        let ips: Vec<IpNetwork> = if let Some(mac_addr) = MacAddress::from_slice(adapter.get_hw_address()) {
-            if let Some(ip_info) = IphlpNetworkAdapterInfo::get_connection_by_hw_address(&mac_addr) {
-                ip_info.unicast_address_list_with_prefix()
-                    .iter()
-                    .filter_map(|(ip_addr, prefix_len)| {
-                        IpNetwork::new(*ip_addr, *prefix_len).ok()
-                    })
-                    .collect()
-            } else {
-                vec![]
+        let index = match interface_index(&adapter) {
+            Some(index) => index,
+            None => {
+                eprintln!("Skipping interface {name}: could not resolve its interface index.");
+                continue;
             }
-        } else {
-            vec![]
         };
+
+        // IP addresses are optional; an adapter without IP configuration has none.
+        let ips: Vec<IpNetwork> = MacAddress::from_slice(adapter.get_hw_address())
+            .and_then(|mac_addr| IphlpNetworkAdapterInfo::get_connection_by_hw_address(&mac_addr))
+            .map(|ip_info| {
+                ip_info
+                    .unicast_address_list_with_prefix()
+                    .iter()
+                    .filter_map(|(ip_addr, prefix_len)| IpNetwork::new(*ip_addr, *prefix_len).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
 
         interfaces.push(NetworkInterface {
             name,
