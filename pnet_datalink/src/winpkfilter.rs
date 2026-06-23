@@ -40,7 +40,7 @@ pub fn channel(
     network_interface: &NetworkInterface,
     config: Config,
 ) -> io::Result<super::Channel> {
-    let driver = Ndisapi::new("NDISRD").map_err(|e| {
+    let driver = Ndisapi::new("uxi_lwf").map_err(|e| {
         io::Error::new(io::ErrorKind::Other, format!("Failed to open WinPkFilter driver: {}", e))
     })?;
 
@@ -224,7 +224,7 @@ impl DataLinkReceiver for DataLinkReceiverImpl {
 pub fn interfaces() -> Vec<NetworkInterface> {
     let mut interfaces = Vec::new();
 
-    let driver = match Ndisapi::new("NDISRD") {
+    let driver = match Ndisapi::new("uxi_lwf") {
         Ok(d) => d,
         Err(e) => {
             eprintln!("Failed to open WinPkFilter driver: {:?}", e);
