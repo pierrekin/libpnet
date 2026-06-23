@@ -41,21 +41,18 @@ impl Default for Config {
     }
 }
 
-/// Resolve the OS interface index for an adapter.
+/// Extract the GUID from a WinpkFilter adapter name.
 ///
-/// WinpkFilter names adapters `\DEVICE\{GUID}`; the GUID is read from that name
-/// and converted to the interface index via the adapter's LUID. Returns `None`
-/// if the name has no `{GUID}` component or a conversion fails.
+/// WinpkFilter names adapters `\DEVICE\{GUID}`. Returns the GUID without braces,
+/// or `None` unless the name contains a brace-delimited GUID in the canonical
+/// 36-character `8-4-4-4-12` form.
 ///
 /// TODO: drop the name parsing once ndisapi-rs exposes the adapter GUID (or
 /// LUID) as a structured field on the NDIS adapter info.
-fn interface_index(adapter: &NetworkAdapterInfo) -> Option<u32> {
+fn adapter_guid(adapter: &NetworkAdapterInfo) -> Option<String> {
     let name = adapter.get_name();
     let start = name.find('{')?;
     let end = name.find('}')?;
-    // The braces delimit the GUID; the value between them must be the canonical
-    // 36-character `8-4-4-4-12` form. `GUID::from` panics on anything else, so
-    // validate before converting and return `None` on a malformed name.
     let inner = name.get(start + 1..end)?;
     let well_formed = inner.len() == 36
         && inner.bytes().enumerate().all(|(i, b)| match i {
@@ -65,7 +62,15 @@ fn interface_index(adapter: &NetworkAdapterInfo) -> Option<u32> {
     if !well_formed {
         return None;
     }
-    let guid = GUID::from(inner);
+    Some(inner.to_owned())
+}
+
+/// Resolve the OS interface index for an adapter GUID.
+///
+/// Converts the GUID to the interface index via the adapter's LUID. Returns
+/// `None` if a conversion fails.
+fn interface_index(guid: &str) -> Option<u32> {
+    let guid = GUID::from(guid);
 
     let mut luid = NET_LUID_LH::default();
     // SAFETY: `guid` is a valid GUID and `luid` is a valid, writable
@@ -98,7 +103,8 @@ pub fn channel(
 
     // Find the adapter by name
     let adapter = adapters.iter().find(|adapter| {
-        adapter.get_name() == &network_interface.name
+        adapter_guid(adapter).map(|guid| format!("{{{guid}}}")).as_deref()
+            == Some(network_interface.name.as_str())
     }).ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "Network interface not found")
     })?;
@@ -290,9 +296,19 @@ pub fn interfaces() -> Vec<NetworkInterface> {
     };
 
     for adapter in adapters {
-        let name = adapter.get_name().to_string();
-        let description =
-            Ndisapi::get_friendly_adapter_name(adapter.get_name()).unwrap_or_else(|_| name.clone());
+        let guid = match adapter_guid(&adapter) {
+            Some(guid) => guid,
+            None => {
+                eprintln!(
+                    "Skipping interface {}: could not determine its GUID.",
+                    adapter.get_name()
+                );
+                continue;
+            }
+        };
+        let name = format!("{{{guid}}}");
+        let description = Ndisapi::get_friendly_adapter_name(adapter.get_name())
+            .unwrap_or_else(|_| name.clone());
 
         // Get MAC
         let mac: Option<MacAddr> = MacAddress::from_slice(adapter.get_hw_address())
@@ -301,7 +317,7 @@ pub fn interfaces() -> Vec<NetworkInterface> {
         MacAddr(bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5])
     });
 
-        let index = match interface_index(&adapter) {
+        let index = match interface_index(&guid) {
             Some(index) => index,
             None => {
                 eprintln!("Skipping interface {name}: could not resolve its interface index.");
